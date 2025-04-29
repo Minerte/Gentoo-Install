@@ -1,0 +1,49 @@
+# Kernel pkg
+sys-kernel/installkernel -systemd efistub ugrd
+sys-kernel/genkernel firmware
+
+# System pkg
+media-video/pipewire pipewire-alsa sound-server
+app-shells/bash-completion eselect
+sys-apps/systemd-utils tmpfiles
+sys-auth/seatd builtin server
+sys-boot/grub device-mapper
+app-crypt/pinentry caps
+app-portage/gemato gpg
+sys-apps/openrc bash
+dev-libs/openssl asm
+dev-lang/python ssl
+dev-libs/nettle gmp
+
+# Core packages
+app-crypt/gnupg smartcard usb tools ssl
+dev-vcs/git gpg highlight curl
+sys-block/parted device-mapper
+
+# App alternatives
+app-alternatives/ninja reference
+app-alternatives/bzip2 lbzip2
+app-alternatives/lex reflex
+app-alternatives/yacc bison
+app-alternatives/gzip pigz
+app-alternatives/cpio gnu
+app-alternatives/awk gawk
+app-alternatives/tar gnu
+app-alternatives/sh bash
+app-alternatives/bc gnu
+
+# Rust lang 
+# remove the commen from system-bootstrap after emerge dev-lang/rust
+dev-lang/rust nightly rust-analyzer rust-src rustfmt #system-bootstrap 
+net-misc/curl http2 ssl
+
+# Networking packages
+net-misc/networkmanager nss iptables tools connection-sharing dhcpcd
+net-dns/dnsmasq dhcp
+
+# neovim uses luajit by default so we select it#
+app-editors/neovim lua_single_target_luajit
+dev-lua/luv lua_single_target_luajit -lua_single_target_lua5-4
+dev-lua/mpack lua_targets_luajit lua_single_target_luajit
+dev-lua/lpeg lua_targets_luajit lua_single_target_luajit
+dev-lua/lua-cjson internal-fpconv

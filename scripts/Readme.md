@@ -5,7 +5,8 @@ The disk visiual:
 ```
 /dev/sda #boot drive
 ├── /dev/sda1      [EFI]   /efi      1 GB         fat32       Bootloader
-└── /dev/sda2      [BOOTX] /boot     1 GB         ext4        Bootloader support files, kernel and initramfs
+└── /dev/sda2      [BOOTX]
+      └──  /dev/mapper/luks_keys     1 GB         ext4        Bootloader support files, kernel and initramfs
 
 /dev/nvme0n1 # root drive
  ├── /dev/nvme0n1p1
@@ -22,50 +23,48 @@ The disk visiual:
 We need to create filesystem for /dev/sda1 and /dev/sda2 (our boot drive).
 ```
 mkfs.vfat -F 32 /dev/sda1 # Boot
-mkfs.ext4 /dev/sda2 # Key-file storage
-### Note that /dev/sda1 is the bootloader and /dev/sda2 is for storage of keyfile
-```
 
+cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 /dev/sda2 # Key
+# lukscrypt passphrase:
+cryptsetup luksOpen /dev/sda2 luks_keys
+# lukscrypt passphrase:
+
+mkfs.ext4 /dev/mapper/luks_keys
+# Note that /dev/sda1 is the bootloader and /dev/sda2 is for storage of keyfile
+```
 After successfully create a filesystem we need to mount /dev/sda2 to /media/sda2 so we can generate Keyfile to partition
 ```
-mkdir /media/sda2
-mount /dev/sda2 /media/sda2
+mkdir -p /mnt/keys
+mount /dev/mapper/luks_keys /mnt/keys
 ```
+
 ### Key generation for SWAP and ROOT partition
 Here we generate a keyfile, the keyfile of should be **8MB**
 ```
 # Swap 
-dd if=/dev/urandom of=/media/sda2/swap-keyfile bs=8388608 count=1 # User can change bs= to any number that is higher then 512bytes
-gpg --symmetric --cipher-algo AES256 --output swap-keyfile.gpg swap-keyfile
+dd if=/dev/urandom of=/mnt/keys/SWAP-KEY bs=8388608 count=1 # User can change bs= to any number that is higher then 512bytes
+gpg --symmetric --cipher-algo AES256 --output SWAP-KEY.gpg SWAP-KEY
 # Root
-dd if=/dev/urandom of=/media/sda2/luks-keyfile bs=8388608 count=1 # User can change bs= to any number that is higher then 512bytes
-gpg --symmetric --cipher-algo AES256 --output luke-keyfile.gpg luks-keyfile
+dd if=/dev/urandom of=/mnt/keys/ROOT-KEY bs=8388608 count=1 # User can change bs= to any number that is higher then 512bytes
+gpg --symmetric --cipher-algo AES256 --output ROOT-KEY.gpg ROOT-KEY
 ```
 
-### Cryptsetup for swap and root
-We need to decrypt the gpg file so we can encrypt the partition using the keyfil.
+Formatting the disk for swap and root
 ```
-# swap
-gpg --decrypt --output /tmp/swap-keyfile /media/sda2/swap-keyfile.gpg
-cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 /dev/[swap_partition] --key-file=/tmp/swap-keyfile 
-# Root
-gpg --decrypt --output /tmp/luks-keyfile /media/sda2/luks-keyfile.gpg
-cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 /dev/[root_pratition] --key-file=/tmp/luks-keyfile
+gpg --batch --yes --decrypt /path/to/SWAP-KEY.gpg | cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 /dev/[swap_partition] --key-file=-
+gpg --batch --yes --decrypt /path/to/ROOT-KEY.gpg | cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 /dev/[root_partition] --key-file=-
 ```
-
 Now we can open the disk for modification.
 ```
-cryptsetup open /dev/[swap_partition] cryptswap --key-file=/tmp/swap-keyfile
-cryptsetup open /dev/[root_partition] cryptroot --key-file=/tmp/luks-keyfile
+gpg --batch --yes --decrypt /path/to/SWAP-KEY.gpg | cryptsetup open /dev/[swap_partition] cryptswap --key-file=-
+gpg --batch --yes --decrypt /path/to/ROOT-KEY.gpg | cryptsetup open /dev/[root_partition] cryptroot --key-file=-
 ```
 
 And then you might want to securely remove the **swap-keyfile/luks-keyfile** with the command:
 #### Caution do not delete the swap-keyfile.gpg/luks-keyfile.gpg in /media/sda2! Or you data will be lost!
 ```
-shred -u /tmp/swap-keyfile
-shred -u /tmp/luks-keyfile
-shred -u /media/sda2/swap-keyfile
-shred -u /media/sda2/luks-keyfile
+shred -u /mnt/keys/SWAP-KEY
+shred -u /mnt/keys/ROOT-KEY
 ```
 
 ### Now we can start to format the partition for usage
@@ -124,6 +123,13 @@ mount -t btrfs -o defaults,noatime,nosuid,noexec,nodev,compress=lzo,subvol=tmp /
                                   /tmp      subvolume
 ```
 
+Make sure the directory of /efi and /efi/EFI/Gentoo is created for the right partition ( in our case /dev/sdX1 )
+```
+mkdir /efi
+mount /dev/sdX1 /efi
+mkdir -p /efi/EFI/Gentoo
+```
+
 We are gone use ugrd. An set up example! \
 /etc/ugrd/config.toml
 ```
@@ -132,27 +138,47 @@ modules = [
   "ugrd.crypto.gpg"
 ]
 
-# These will be automatically mounted early in init
+# This will auto-mount the key partition *after* unlocking it
 auto_mounts = [
-  "/boot",
+  "/boot"
   "/mnt/bootkeys"
 ]
 
+# First, define how to unlock the encrypted key partition
+[cryptsetup.bootkeys]
+device = "/dev/disk/by-uuid/<UUID_OF_SDA2>"  # This is the encrypted LUKS device
+name = "bootkeys"
+key_type = "password"                        # You will enter passphrase at boot
+mountpoint = "/mnt/bootkeys"
+
 [[mounts]]
-device = "/dev/disk/by-uuid/<UUID_OF_SDA2>"   # This is your ext4 partition with keyfiles
+device = "/dev/mapper/luks_keys"              # Now unlocked device
 mountpoint = "/mnt/bootkeys"
 filesystem = "ext4"
 options = "ro"
 
+# Now tell ugrd to use the decrypted keyfiles from /mnt/bootkeys
 [cryptsetup.root]
-# luksUUID can be auto-detected, or you can specify it manually
 key_type = "gpg"
-key_file = "/mnt/bootkeys/luks-keyfile.gpg"
+key_file = "/mnt/bootkeys/ROOT-KEY.gpg"
 
 [cryptsetup.swap]
 key_type = "gpg"
-key_file = "/mnt/bootkeys/swap-keyfile.gpg"
+key_file = "/mnt/bootkeys/SWAP-KEY.gpg"
 
+```
+(**might** not need the /lib/ugrd/init "custom" and if you need it dont forget to add **init=/lib/ugrd/init** into the built-in kernel command line) \
+And we need to add this to /lib/ugrd/init 
+```
+#!/bin/sh
+
+set -e
+
+echo "Unlocking swap partition..."
+gpg --batch --yes --quiet --decrypt /mnt/bootkeys/SWAP-KEY.gpg | cryptsetup open /dev/[swap_partition] cryptswap --key-file=-
+
+echo "Unlocking root partition..."
+gpg --batch --yes --quiet --decrypt /mnt/bootkeys/ROOT-KEY.gpg | cryptsetup open /dev/[root_partition] cryptroot --key-file=-
 ```
 
 The script will allow the user to edit kernel manually! \
@@ -162,17 +188,30 @@ When editing kernel user need to add kernel_cmdline or we can add --unicode for 
 ```
 Processor type and features  --->
     [*] Built-in kernel command line
-    (root=LABEL=BTROOT rootflags=subvol=activeroot init=/lib/ugrd/init) Built-in kernel command string
+    (root=LABEL=BTROOT rootflags=subvol=activeroot) Built-in kernel command string
 ```
+
+Now we need to generate the initramfs for the kernel.img
+```
+ugrd --kver 6.12.21-gentoo /efi/EFI/Gentoo/initramfs-6.12.21-gentoo.img
+```
+***after kernel build run one of these command***
+```
+# Run one of these
+cp /boot/bzImage-* /efi/EFI/Gentoo/bzImage.efi
+cp /boot/vmlinuz-* /efi/EFI/Gentoo/bzImage.efi
+cp /boot/kernel-* /efi/EFI/Gentoo/bzImage.efi
+```
+
 #### EFIBOOTMGR "example" ***without*** the built-in kernel command line
 ```
 efibootmgr --create --disk <bootdisk> --part 1 \
   --label "Gentoo" \
   --loader "\EFI\Gentoo\bzImage.efi" \
-  --unicode 'initrd=\EFI\Gentoo\initramfs-6.1.21-gentoo.img \
+  --unicode 'initrd=\EFI\Gentoo\initramfs-6.12.21-gentoo.img \
   root=LABEL=BTROOT \
   rootflags=subvol=activeroot \
-  init=/lib/ugrd/init' \
+  init=/lib/ugrd/init' \ # might not need the init=/lib/ugrd/init
   --verbose
 ```
 #### EFIBOOTMGR "example" ***with*** the built-in kernel command line
@@ -180,7 +219,7 @@ efibootmgr --create --disk <bootdisk> --part 1 \
 efibootmgr --create --disk <bootdisk> --part 1 \
   --label "Gentoo" \
   --loader "\EFI\Gentoo\bzImage.efi" \
-  --unicode "initrd=\EFI\Gentoo/initramfs-6.1.21-gentoo.img" \
+  --unicode "initrd=\EFI\Gentoo\initramfs-6.12.21-gentoo.img" \
   --verbose
 ```
 ***If using embedded initramfs for kernel you can remove "initrd=\EFI\Gentoo\initramfs.img" from efibootmgr --unicode***

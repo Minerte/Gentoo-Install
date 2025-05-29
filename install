@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# Initialize script envireoment
+# This will go after gentoo.conf file
+
+set -uo pipefail # Pipestatus: exit status of the last command that threw a non-zero exit code is returned.
+
+function get_source_dir() {
+    # Get the directory where this script is located
+    local script_dir
+    script_dir="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+    
+    # Go up one level since main.sh is in the scripts/ subdirectory
+    local repo_dir
+    repo_dir="$(dirname "${script_dir}")"
+    
+    echo "${repo_dir}"
+}
+
+GENTOO_INSTALL_REPO_DIR_ORIGINAL="$(get_source_dir)"
+GENTOO_INSTALL_REPO_DIR="$GENTOO_INSTALL_REPO_DIR_ORIGINAL"
+
+source "$GENTOO_INSTALL_REPO_DIR/scripts/main.sh"
+source "$GENTOO_INSTALL_REPO_DIR/scripts/config.sh"
+

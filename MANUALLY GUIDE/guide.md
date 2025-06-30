@@ -1,8 +1,8 @@
 ### 1 introduction
-This guide is for Gentoo Linux installation with GPG keyfile for Swap and Root pratitions.
+This guide is for Gentoo Linux installation with GPG keyfile for Swap and Root partitions.
 In this installation we will be using sys-kernel/gentoo-sources, ugRD for the initramfs and EFI Stub. 
 	List we need to change:
-		• Generate GPG key file for partitions
+		• Generate GPG key file for partitions 
 		• Configure kernel
 		• Configure ugRD for auto unlock swap/root
 	This guide also assumes the user has:
@@ -10,6 +10,7 @@ In this installation we will be using sys-kernel/gentoo-sources, ugRD for the in
 		• Working ethernet/WIFI
 		• Disk size ≥ 100 GB
 		• A separate USB with Disk size ≥ 3 GB for boot and key storage
+***Before continuation:*** *Any operations involving disks are performed at the user's discretion. Data loss, and UUIDs are subject to change.*
 ### 2 Disk Preparations
 ```
 root # fdisk /dev/sdX
@@ -43,11 +44,11 @@ Created a new partition 1 of type 'Linux filesystem' and of size 1 GiB.
 Now we need to change Type for the ESP partition:
 ```
 Command (m for help): t
-Partition number (1-2, default 1): 2
+Partition number (1-2, default 1): 
 Partition type or alias (type L to list all): 1
 Changed type of partition 'Linux filesystem' to 'EFI System'.
 ```
-And after we need to set for Extended boot
+Then set the type for the Extended boot partition.
 ```
 Command (m for help): t
 Partition number (1-2, default 1): 2
@@ -110,7 +111,7 @@ cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --key-size 512 --has
 ```
 After we need to open it so we can make a filesystem:
 ```
-crypt luksOpen /dev/sda2 luks-keys
+cryptsetup luksOpen /dev/sda2 luks-keys
 # lukscrypt passphrase: 
 ```
 Now we can make the filesystem for extended boot partition:
@@ -136,7 +137,7 @@ And now we can open the swap disk:
 gpg --batch --yes --decrypt /path/to/SWAP-KEY.gpg | cryptsetup open /dev/[swap_partition] cryptswap --key-file=-
 ```
 
-We now need to do the same thing with root partition:
+Now repeat the same process for the root partition:
 ```
 dd if=/dev/urandom bs=8388608 count=1 | gpg --symmetric --cipher-algo AES256 --output ROOT-KEY.gpg
 ```
@@ -150,14 +151,14 @@ Open root disk:
 gpg --batch --yes --decrypt /path/to/ROOT-KEY.gpg | cryptsetup open /dev/[root_partition] cryptroot --key-file=-
 ```
 
-### 2.5 configure Swap/Root drive
+### 2.5 Configure Swap/Root drive
 Make a swap:
 ```
 mkswap /dev/mapper/cryptswap
 swapon /dev/mapper/cryptswap
 ```
 Root Filesystem:
-	We first need to mount the partition to /mnt/root for we gone have separated subvolumes for the Root partition:
+	We first need to mount the partition to /mnt/root for we are going to have separated subvolumes for the Root partition:
 	```
 	mkdir -p /mnt/root
 	mkfs.btrfs -L BTROOT /dev/mapper/cryptroot
@@ -193,7 +194,7 @@ mount -t btrfs -o defaults,noatime,nosuid,noexec,nodev,compress=lzo,subvol=tmp /
 ```
 
 ### 3 Downloading stage 3 file
-Before downloading the stage 3 files it might be a good idea to check the date so when installtion is done we do not get clock skew:
+Before downloading the stage 3 files it might be a good idea to check the date so when installation is done we do not get clock skew:
 ```
 # To check date
 date
@@ -225,18 +226,18 @@ after that you run:
 ```
 gpg --verify stage3-*.tar.xz.asc stage3-*.tar.xz
 ```
-If everything is going to plan then we can extract it:
+If everything is correct, we can extract it:
 ```
 tar xpvf stage3-*.tar.xz --xattrs-include='*.*' --numeric-owner -C /mnt/gentoo
 ```
-but if it can't verify delete the stage3 files (both tar.xz and tar.xz.asc) and redownload them from different sources or wait little bit and then redownload them.
-### 4 Basic System configures
-Before we chroot into our new system we can edit some basic system like ***FSTAB***, ***Keyboard Layout*** and also custom ***Portage***. remember that you need to do:
+If verification fails, delete the stage3 files (both tar.xz and tar.xz.asc) and redownload them from a different source, or wait a bit and try again.
+### 4 Basic System configurations 
+Before we chroot into our new system we can edit some basic system like ***FSTAB***, ***Keyboard Layout*** and also custom ***Portage***. Remember that you need to do:
 ```
 mv /path/to/custom_portage/ /mnt/gentoo/etc/portage/RIGHT_PORTAGE_FILE_DIRECTORY
 ```
 ### 5 Chroot 
-Copy DNS info to chroot enviroment:
+Copy DNS info to chroot environment:
 ```
 cp --dereference /etc/resolv.conf /mnt/gentoo/etc/
 ```
@@ -254,7 +255,7 @@ mount --make-slave /mnt/gentoo/run
 # Chrooted
 ### 1 New environment
 ```
-chroot /mnt/gentoo /bint/bash
+chroot /mnt/gentoo /bin/bash
 ```
 Now we need to source the profile and export so if we accidently exit chroot we will know:
 ```
@@ -276,12 +277,12 @@ emerge --sync
 emerge --sync --quiet # If using a "slow" terminal
 ```
 ### 2 Updating and Selecting systems
-selectin the system can only be used if user selected stage 3 openrc or stage 3 systemd. if user selected any desktop profile or any other fixed stage profile we do not need to do:
+Selecting the system can only be used if user selected stage 3 openrc or stage 3 systemd. if user selected any desktop profile or any other fixed stage profile we do not need to do:
 ```
 eselect profile list
 eselect profile set PROFILE_NUMBER
 ```
-for we already have the preconfigured stage file.
+since we already have the preconfigured stage file.
 Before updating we can change so that portage use ***Binary*** packages instead of ***sources***. But we will not be using it.
 We can also edit the ***use flag***, ***license*** and change any necessary things before updating. But in this case we already do have configured portage before chrooting and we only need to change cpuid2cpuflags.
 so we can emerge the package:
@@ -292,12 +293,12 @@ and then run:
 ```
 cpuid2cpuflags
 ```
-now you can type it in manually or use:
+You can now type it in manually or use:
 ```
 CPU_FLAGS=$(cpuid2cpuflags | cut -d' ' -f2-)
 if grep -q "^CPU_FLAGS_X86=" /etc/portage/make.conf; then
     sed -i "s/^CPU_FLAGS_X86=.*/CPU_FLAGS_X86=\"${CPU_FLAGS}\"/" /etc/portage/make.conf  || { echo "could not add CPU_FLAGS_X86= and cpuflags to make.conf"; exit 1; }
-    echo "cpuid2cpuflags added succesfully to make.conf"
+    echo "cpuid2cpuflags added successfully to make.conf"
 else
     echo "CPU_FLAGS_X86=\"${CPU_FLAGS}\"" >> /etc/portage/make.conf || { echo "could not add cpuflags to make.conf"; exit 1; }
 fi
@@ -306,7 +307,7 @@ We can now start to update the system:
 ```
 emerge --ask --verbose --update --deep --changed-use @world
 ```
-For users who actvated binary:
+For users who activated binary:
 ```
 emerge --ask --verbose --update --deep --newuse --getbinpkg @world
 ```
@@ -323,8 +324,8 @@ And then run:
 env-update && source /etc/profile && export PS1="(chroot) ${PS1}"
 ```
 ### 3 Install/openrc-service
-after the update we can install the the extra tools and packages we need.
-an example:
+after the update we can install the extra tools and packages we need.
+For example:
 ```
 emerge --ask sys-kernel/gentoo-sources sys-kernel/genkernel sys-kernel/installkernel sys-kernel/linux-firmware \
 sys-fs/cryptsetup sys-fs/btrfs-progs sys-apps/sysvinit sys-auth/seatd sys-apps/dbus sys-apps/pciutils \
@@ -332,7 +333,7 @@ sys-process/cronie net-misc/chrony net-misc/networkmanager app-admin/sysklogd ap
 dev-vcs/git sys-apps/mlocate sys-block/io-scheduler-udev-rules sys-boot/efibootmgr sys-firmware/sof-firmware \
 app-editors/neovim app-arch/unzip
 ```
-first we need to deactivate some services or it will conflict:
+First, we need to deactivate some services to avoid conflicts:
 ```
 rc-service dhcpcd stop
 rc-update del hostname boot
@@ -354,7 +355,7 @@ Configure networkmanager
 nmcli general hostname CUSTOM_NAME
 ```
 ### 4 Kernel configuration
-We will be using:
+We will use:
 ```
 genkernel --luks --btrfs --keymap --oldconfig --save-config --menuconfig --install all 
 ```
@@ -364,6 +365,7 @@ Processor type and features  --->
     [*] Built-in kernel command line
     (root=LABEL=BTROOT rootflags=subvol=activeroot) Built-in kernel command string
 ```
+The built in command line should match yours root labels and subvolumes names.
 And then we need to "activate" some modules:
 Cryptographic API support:
 ```
@@ -437,7 +439,7 @@ key_type = "gpg"
 key_file = "/mnt/bootkeys/SWAP-KEY.gpg"
 ```
 ### 5 Bootloader 
-and now we just run EFIbootmgr:
+Now, just run efibootmgr:
 ```
 efibootmgr --create --disk <bootdisk> --part 1 \
   --label "Gentoo" \
@@ -445,3 +447,13 @@ efibootmgr --create --disk <bootdisk> --part 1 \
   --unicode "initrd=\EFI\Gentoo\initramfs-6.12.21-gentoo.img" \
   --verbose
 ```
+
+The Guide sources: \
+[Kernel/Command-line parameters](https://wiki.gentoo.org/wiki/Kernel/Command-line_parameters) \
+[Custom Initramfs/Examples](https://wiki.gentoo.org/wiki/Custom_Initramfs/Examples) \
+[Gentoo AMD64 Handbook](https://wiki.gentoo.org/wiki/Handbook:AMD64) \
+[EFI stub](https://wiki.gentoo.org/wiki/EFI_stub) \
+[GnuPG](https://wiki.gentoo.org/wiki/GnuPG) \
+
+User Sources: \
+[User:Sakaki/Sakaki's EFI Install Guide/Preparing the LUKS-LVM Filesystem and Boot USB Key](https://wiki.gentoo.org/wiki/User:Sakaki/Sakaki%27s_EFI_Install_Guide/Preparing_the_LUKS-LVM_Filesystem_and_Boot_USB_Key) \

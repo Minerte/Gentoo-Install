@@ -69,7 +69,7 @@ function configure_kernel() {
 function install_kernel() {
 	try emerge --verbose sys-boot/efibootmgr
 
-		# Copy kernel to EFI
+	# Copy kernel to EFI
 	local kernel_file
 	kernel_file="$(find "/boot" \( -name "vmlinuz-*" -or -name 'kernel-*' \) -printf '%f\n' | sort -V | tail -n 1)" \
 		|| die "Could not list newest kernel file"
@@ -261,8 +261,6 @@ function main_install_gentoo_in_chroot() {
 		echo "ACCEPT_KEYWORDS=\"~$GENTOO_ARCH\"" >> /etc/portage/make.conf \
 			|| die "Could not modify /etc/portage/make.conf"
 	fi
-
-	maybe_exec 'after_install'
 
 	einfo "Gentoo installation complete."
 	[[ $USED_LUKS == "true" ]] \

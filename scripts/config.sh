@@ -18,9 +18,13 @@ declare IS_EFI=true
 declare -gA DISK_ID_TO_UUID
 
 function disk_creation() {
+    local BOOT="$1"
+    local ROOT="$2"
+    local SWAP_SIZE="$3"
+
     # Boot disk
     echo "Editing disk for drive"
-    parted "$BOOT_DRIVE" --script \
+    parted "$BOOT" --script \
         mklabel gpt \
         mkpart primary fat32 1MiB 1GiB \
         mkpart primary ext4 1GiB 2GiB \
@@ -29,7 +33,7 @@ function disk_creation() {
         print
 
     # Root and Swap disk
-    parted "$ROOT_DRIVE" --script \
+    parted "$ROOT" --script \
         mklabel gpt \
         mkpart primary linux-swap 0% "${SWAP_SIZE}G" \
         mkpart primary btrfs "${SWAP_SIZE}G" 100% \
@@ -96,10 +100,12 @@ function verify_disk_ids() {
 
 
 function create_gpg_disk_layout() {
-    local BOOT="${BOOT_DRIVE}"
-    local ROOT="${ROOT_DRIVE}"
+    local BOOT="$1"
+    local ROOT="$2"
+    local SWAP_SIZE="$3"
     export GPG_TTY=$(tty)
 
+    # Create partitions if they dont exist
     mkfs.vfat -F 32 "${BOOT}1"
     cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 "${BOOT}2"
     cryptsetup luksOpen "${BOOT}2" luks-keys

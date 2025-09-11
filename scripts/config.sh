@@ -18,9 +18,14 @@ declare IS_EFI=true
 declare -gA DISK_ID_TO_UUID
 
 function disk_creation() {
-    local BOOT="$1"
-    local ROOT="$2"
-    local SWAP_SIZE="$3"
+    # Check if BOOT_DRIVE and ROOT_DRIVE are set
+    if [[ -z "$BOOT_DRIVE" || -z "$ROOT_DRIVE" || -z "$SWAP_SIZE" ]]; then
+        die "BOOT_DRIVE, ROOT_DRIVE, or SWAP_SIZE not set. Please configure them in gentoo.conf"
+    fi
+
+    local BOOT="$BOOT_DRIVE"
+    local ROOT="$ROOT_DRIVE"
+    local SWAP_SIZE="$SWAP_SIZE"
 
     # Boot disk
     echo "Editing disk for drive"
@@ -100,9 +105,14 @@ function verify_disk_ids() {
 
 
 function create_gpg_disk_layout() {
-    local BOOT="$1"
-    local ROOT="$2"
-    local SWAP_SIZE="$3"
+    # Check if BOOT_DRIVE and ROOT_DRIVE are set
+    if [[ -z "$BOOT_DRIVE" || -z "$ROOT_DRIVE" || -z "$SWAP_SIZE" ]]; then
+        die "BOOT_DRIVE, ROOT_DRIVE, or SWAP_SIZE not set. Please configure them in gentoo.conf"
+    fi
+
+    local BOOT="$BOOT_DRIVE"
+    local ROOT="$ROOT_DRIVE"
+    
     export GPG_TTY=$(tty)
 
     # Create partitions if they dont exist

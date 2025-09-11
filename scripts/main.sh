@@ -2,7 +2,7 @@ source "$GENTOO_INSTALL_REPO_DIR/scripts/protection.sh" || exit 1
 source "$GENTOO_INSTALL_REPO_DIR/gentoo.conf" || { echo "Could not source gentoo.conf"; exit 1; }
 
 function install_stage3() {
-	prep_installtion_environment
+	prep_installation_environment
 	preprocess_config
 	apply_disk_conf
 	dowmload_stage3

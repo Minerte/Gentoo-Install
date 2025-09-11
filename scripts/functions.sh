@@ -3,7 +3,7 @@
 source "$GENTOO_INSTALL_REPO_DIR/scripts/protection.sh" || exit 1
 source "$GENTOO_INSTALL_REPO_DIR/gentoo.conf" || { echo "Could not source gentoo.conf"; exit 1; }
 
-function prepare_installation_environment() {
+function prep_installation_environment() {
 	einfo "Preparing installation environment"
 
 	local wanted_programs=(
@@ -19,16 +19,29 @@ function prepare_installation_environment() {
 		wget
 	)
 
-	[[ $USED_BTRFS == "true" ]] \
-		&& wanted_programs+=(btrfs)
-	[[ $USED_LUKS == "true" ]] \
-		&& wanted_programs+=(cryptsetup)
-
 	# Check for existence of required programs
 	check_wanted_programs "${wanted_programs[@]}"
 
 	# Sync time now to prevent issues later
 	sync_time
+}
+
+function sync_time() {
+	einfo "Syncing time"
+	if command -v ntpd &> /dev/null; then
+		try ntpd -g -q
+	elif command -v chrony &> /dev/null; then
+		# See https://github.com/oddlama/gentoo-install/pull/122
+		try chronyd -q
+	else
+		# why am I doing this?
+		try date -s "$(curl -sI http://example.com | grep -i ^date: | cut -d' ' -f3-)"
+	fi
+
+	einfo "Current date: $(LANG=C date)"
+	einfo "Writing time to hardware clock"
+	hwclock --systohc --utc \
+		|| die "Could not save time to hardware clock"
 }
 
 function download_stage3() {

@@ -1,7 +1,6 @@
 # This is for Disk and Systyem configurations
 
 source "$GENTOO_INSTALL_REPO_DIR/scripts/protection.sh" || exit 1
-source "$GENTOO_INSTALL_REPO_DIR/gentoo.conf" || { echo "Could not source gentoo.conf"; exit 1; }
 
 # must reside in /tmp to allow the chrooted system to access the files
 TMP_DIR="/tmp/gentoo-install"

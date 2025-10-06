@@ -5,7 +5,7 @@ function install_stage3() {
 	prep_installation_environment
 	preprocess_config
 	apply_disk_conf
-	dowmload_stage3
+	download_stage3
 	extract_stage3
 }
 
@@ -275,14 +275,25 @@ function main_install() {
 	gentoo_umount
 	install_stage3
 
+	# Set up bind mount for repo directory so it's accessible in chroot
+	bind_repo_dir
+	
 	mount_efivars
-	gentoo_chroot "$ROOT_MOUNTPOINT" "$GENTOO_INSTALL_REPO_BIND/install" __install_gentoo_in_chroot
+	gentoo_chroot "$ROOT_MOUNTPOINT/gentoo" "$GENTOO_INSTALL_REPO_BIND/install" __install_gentoo_in_chroot
 }
 
 function main_chroot() {
 	# Skip if already mounted
 	mountpoint -q -- "$1" \
 		|| die "'$1' is not a mountpoint"
+
+	# If this looks like it might be a btrfs setup, provide helpful guidance
+	if [[ "$1" == "$ROOT_MOUNTPOINT" ]] && [[ -d "$ROOT_MOUNTPOINT/gentoo" ]] && mountpoint -q "$ROOT_MOUNTPOINT/gentoo" 2>/dev/null; then
+		ewarn "Detected btrfs subvolume setup. You probably want to chroot into:"
+		ewarn "  $ROOT_MOUNTPOINT/gentoo"
+		ewarn "Instead of: $ROOT_MOUNTPOINT"
+		die "Use the activeroot subvolume mountpoint for chroot"
+	fi
 
 	gentoo_chroot "$@"
 }

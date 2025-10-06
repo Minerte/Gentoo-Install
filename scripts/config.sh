@@ -15,6 +15,8 @@ UUID_STORAGE_DIR="$TMP_DIR/uuids"
 declare IS_EFI=true        
 # An associative array to check for existing ids (maps to uuids)
 declare -gA DISK_ID_TO_UUID
+# An associative array to resolve device IDs to actual devices
+declare -gA DISK_ID_TO_RESOLVABLE
 
 function disk_creation() {
     # Check if BOOT_DRIVE and ROOT_DRIVE are set
@@ -26,32 +28,96 @@ function disk_creation() {
     local ROOT="$ROOT_DRIVE"
     local SWAP_SIZE="$SWAP_SIZE"
 
-    # Boot disk
-    echo "Editing disk for drive"
-    parted "$BOOT" --script \
+    # Pre-flight checks
+    echo "Performing pre-flight checks..."
+    [[ -b "$BOOT" ]] || die "Boot drive $BOOT is not a block device"
+    [[ -b "$ROOT" ]] || die "Root drive $ROOT is not a block device"
+    
+    # Check if devices are mounted and unmount if necessary
+    echo "Checking for mounted filesystems on target devices..."
+    if mountpoint -q -- "$BOOT" 2>/dev/null || grep -q "^$BOOT" /proc/mounts; then
+        echo "Unmounting $BOOT..."
+        umount "$BOOT" || die "Failed to unmount $BOOT"
+    fi
+    if mountpoint -q -- "$ROOT" 2>/dev/null || grep -q "^$ROOT" /proc/mounts; then
+        echo "Unmounting $ROOT..."
+        umount "$ROOT" || die "Failed to unmount $ROOT"
+    fi
+    
+    # Unmount any existing partitions
+    for dev in "${BOOT}"* "${ROOT}"*; do
+        if [[ -b "$dev" ]] && mountpoint -q -- "$dev" 2>/dev/null; then
+            echo "Unmounting partition $dev..."
+            umount "$dev" 2>/dev/null || true
+        fi
+    done
+
+    # Clean up any existing partition table remnants
+    echo "Cleaning existing partition tables..."
+    wipefs -a "$BOOT" 2>/dev/null || true
+    wipefs -a "$ROOT" 2>/dev/null || true
+    
+    # Remove any lingering device files
+    rm -f "${BOOT}"[0-9]* "${ROOT}"[0-9]* 2>/dev/null || true
+    
+    sync
+    partprobe 2>/dev/null || true
+    sleep 1
+
+    # Boot disk partitioning
+    echo "Creating partitions on boot disk $BOOT"
+    if ! parted "$BOOT" --script \
         mklabel gpt \
         mkpart primary fat32 1MiB 1GiB \
         mkpart primary ext4 1GiB 2GiB \
         set 1 esp on \
         set 2 legacy_boot on \
-        print
+        print; then
+        die "Failed to create partitions on boot disk $BOOT"
+    fi
 
-    # Root and Swap disk
-    parted "$ROOT" --script \
+    # Root and Swap disk partitioning
+    echo "Creating partitions on root disk $ROOT"
+    if ! parted "$ROOT" --script \
         mklabel gpt \
         mkpart primary linux-swap 0% "${SWAP_SIZE}G" \
         mkpart primary btrfs "${SWAP_SIZE}G" 100% \
         set 1 swap on \
-        print
+        print; then
+        die "Failed to create partitions on root disk $ROOT"
+    fi
+    
+    # Force kernel to re-read partition tables
+    echo "Forcing kernel to re-read partition tables..."
+    sync
+    partprobe "$BOOT" "$ROOT"
+    sleep 2
+    partprobe
+    sleep 3
 
     verify_partitions
 }
 
 function verify_partitions() {
     # Wait for partitions to be recognized
+    echo "Waiting for partitions to be recognized by the kernel..."
     sync
     partprobe
     sleep 2
+    
+    # Additional wait and probing for stubborn systems
+    partprobe "$BOOT_DRIVE" "$ROOT_DRIVE" 2>/dev/null
+    sleep 3
+
+    # Debug: List current partitions
+    echo "Debug: Current partitions on $BOOT_DRIVE:"
+    lsblk "$BOOT_DRIVE" 2>/dev/null || echo "Could not list $BOOT_DRIVE"
+    echo "Debug: Current partitions on $ROOT_DRIVE:"
+    lsblk "$ROOT_DRIVE" 2>/dev/null || echo "Could not list $ROOT_DRIVE"
+    
+    # Additional debugging: Show /proc/partitions
+    echo "Debug: Kernel partition table:"
+    grep -E "(${BOOT_DRIVE##*/}|${ROOT_DRIVE##*/})" /proc/partitions 2>/dev/null || echo "No partitions found in /proc/partitions"
 
     # Verify and store UUIDs for all partitions
     local partitions=(
@@ -65,7 +131,34 @@ function verify_partitions() {
         local device=${part%:*}
         local id=${part#*:}
         
-        if [[ ! -b "$device" ]]; then
+        echo "Debug: Checking for partition $device ($id)..."
+        
+        # Check if it exists as any kind of file
+        if [[ -e "$device" ]]; then
+            if [[ -b "$device" ]]; then
+                echo "Debug: $device exists as a block device ✓"
+            elif [[ -f "$device" ]]; then
+                echo "Error: $device exists as a regular file (not block device)"
+                echo "This indicates partition creation failed. File details:"
+                ls -la "$device"
+                echo "Attempting to remove the file and re-probe..."
+                rm -f "$device"
+                sync
+                partprobe "$BOOT_DRIVE" "$ROOT_DRIVE" 2>/dev/null
+                sleep 2
+                if [[ -b "$device" ]]; then
+                    echo "Success: $device is now a proper block device after cleanup"
+                else
+                    die "Failed to create proper block device $device after cleanup"
+                fi
+            else
+                echo "Error: $device exists but is neither a regular file nor block device"
+                ls -la "$device"
+                die "Partition $device ($id) has unexpected file type!"
+            fi
+        else
+            echo "Error: Block device $device does not exist. Available devices:"
+            ls -la "${device%[0-9]*}"* 2>/dev/null || echo "No devices found with pattern ${device%[0-9]*}*"
             die "Partition $device ($id) not found!"
         fi
         
@@ -131,6 +224,9 @@ function create_gpg_disk_layout() {
     dd if=/dev/urandom bs=8388608 count=1 | gpg --symmetric --cipher-algo AES256 --output /mnt/keys/ROOT-KEY.gpg
     gpg --batch --yes --decrypt /mnt/keys/ROOT-KEY.gpg | cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 "${ROOT}2" --key-file=-
     gpg --batch --yes --decrypt /mnt/keys/ROOT-KEY.gpg | cryptsetup open "${ROOT}2" cryptroot --key-file=-
+    
+    # Create resolve entries for the encrypted devices
+    create_resolve_entry_device "ROOT" "/dev/mapper/cryptroot"
 }
 
 function apply_disk_conf() {
@@ -140,18 +236,32 @@ function apply_disk_conf() {
     swapon /dev/mapper/cryptswap
 
     mkfs.btrfs -L "$LABEL" /dev/mapper/cryptroot
-    mkdir $ROOT_MOUNTPOINT/activeroot
-    mount -t btrfs -o defaults,noatime,compress=zstd /dev/mapper/cryptroot $ROOT_MOUNTPOINT/activeroot
+    
+    # Create necessary directory structure
+    mkdir -p "$ROOT_MOUNTPOINT/activeroot"
+    
+    # Mount the root filesystem to create subvolumes
+    mount -t btrfs -o defaults,noatime,compress=zstd /dev/mapper/cryptroot "$ROOT_MOUNTPOINT/activeroot"
 
-    for sub in activeroot home etc var log tmp; do 
-        btrfs subvolume create $ROOT_MOUNTPOINT/activeroot/$sub  || { echo "Failed to create subvolume $sub"; exit 1; }
+    # Create btrfs subvolumes (note: activeroot subvolume shouldn't be created inside itself)
+    for sub in home etc var log tmp; do 
+        btrfs subvolume create "$ROOT_MOUNTPOINT/activeroot/$sub" || { echo "Failed to create subvolume $sub"; exit 1; }
     done
+    
+    # Create activeroot subvolume at the root level
+    btrfs subvolume create "$ROOT_MOUNTPOINT/activeroot/activeroot" || { echo "Failed to create subvolume activeroot"; exit 1; }
 
-    mkdir -p $ROOT_MOUNTPOINT/gentoo/{home,etc,var,log,tmp,efi,boot}
-
-    mount -t btrfs -o defaults,noatime,compress=lzo,subvol=activeroot /dev/mapper/cryptroot $ROOT_MOUNTPOINT/gentoo/
+    # Remount with activeroot subvolume
+    umount "$ROOT_MOUNTPOINT/activeroot"
+    mkdir -p "$ROOT_MOUNTPOINT/gentoo"
+    mount -t btrfs -o defaults,noatime,compress=lzo,subvol=activeroot /dev/mapper/cryptroot "$ROOT_MOUNTPOINT/gentoo/"
+    
+    # Create mount points for the final system AFTER mounting activeroot
+    mkdir -p "$ROOT_MOUNTPOINT/gentoo"/{home,etc,var,log,tmp,efi,boot}
+    
+    # Mount other subvolumes
     for sub in home etc var log; do
-        mount -t btrfs -o defaults,noatime,compress=zstd,subvol=$sub /dev/mapper/cryptroot $ROOT_MOUNTPOINT/gentoo/$sub   || { echo "Failed to mount subvolume $sub"; exit 1; }
+        mount -t btrfs -o defaults,noatime,compress=zstd,subvol=$sub /dev/mapper/cryptroot "$ROOT_MOUNTPOINT/gentoo/$sub" || { echo "Failed to mount subvolume $sub"; exit 1; }
     done
-    mount -t btrfs -o defaults,noatime,nosuid,noexec,nodev,compress=lzo,subvol=tmp /dev/mapper/cryptroot $ROOT_MOUNTPOINT/gentoo/tmp
+    mount -t btrfs -o defaults,noatime,nosuid,noexec,nodev,compress=lzo,subvol=tmp /dev/mapper/cryptroot "$ROOT_MOUNTPOINT/gentoo/tmp"
 }

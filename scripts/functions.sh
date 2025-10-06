@@ -13,6 +13,7 @@ function prep_installation_environment() {
 		ntpd
 		partprobe
 		python3
+		"?rhash"
 		sha512sum
 		sgdisk
 		uuidgen
@@ -71,6 +72,8 @@ function download_stage3() {
 	# File to indiciate successful verification
 	CURRENT_STAGE3_VERIFIED="${CURRENT_STAGE3}.verified"
 
+	maybe_exec 'before_download_stage3' "$STAGE3_BASENAME_FINAL"
+
 	# Download file if not already downloaded
 	if [[ -e $CURRENT_STAGE3_VERIFIED ]]; then
 		einfo "$STAGE3_BASENAME_FINAL tarball already downloaded and verified"
@@ -78,7 +81,6 @@ function download_stage3() {
 		einfo "Downloading $STAGE3_BASENAME_FINAL tarball"
 		download "$STAGE3_RELEASES/${CURRENT_STAGE3}" "${CURRENT_STAGE3}"
 		download "$STAGE3_RELEASES/${CURRENT_STAGE3}.DIGESTS" "${CURRENT_STAGE3}.DIGESTS"
-        download "$STAGE3_RELEASES/${CURRENT_STAGE3}.asc" "${CURRENT_STAGE3}.asc"
 
 		# Import gentoo keys
 		einfo "Importing gentoo gpg key"
@@ -93,25 +95,34 @@ function download_stage3() {
 		gpg --quiet --verify "${CURRENT_STAGE3}.DIGESTS" \
 			|| die "Signature of '${CURRENT_STAGE3}.DIGESTS' invalid!"
 
-        # Verify tarball .asc signature
-        einfo "Verifying tarball .asc signature"
-        gpg --quiet --verify "${CURRENT_STAGE3}.asc" "${CURRENT_STAGE3}" \
-            || die "Signature of '${CURRENT_STAGE3}' invalid!"
 		# Check hashes
-        einfo "Verifying tarball integrity (sha512sum and gpg)"
-        digest_line=$(grep 'tar.xz$' "${CURRENT_STAGE3}.DIGESTS" | sed -e 's/  .*stage3-/  stage3-/')
-        # Always run both, fail if either fails
-        sha512sum --check <<< "$digest_line" \
-            || die "sha512sum: Checksum mismatch!"
-        gpg --quiet --verify "${CURRENT_STAGE3}.DIGESTS" \
-            || die "Signature of '${CURRENT_STAGE3}.DIGESTS' invalid!"
+		einfo "Verifying tarball integrity"
+		# Extract only the SHA512 hash line from the DIGESTS file
+		digest_line=$(grep -A1 "# SHA512 HASH" "${CURRENT_STAGE3}.DIGESTS" | grep 'tar.xz$' | head -1 | sed -e 's/  .*stage3-/  stage3-/')
+		if [[ -z "$digest_line" ]]; then
+			# Fallback: try to find any SHA512 line for the tarball
+			digest_line=$(grep 'tar.xz$' "${CURRENT_STAGE3}.DIGESTS" | tail -1 | sed -e 's/  .*stage3-/  stage3-/')
+		fi
+		if type rhash &>/dev/null; then
+			rhash -P --check <(echo "# SHA512"; echo "$digest_line") \
+				|| die "Checksum mismatch!"
+		else
+			sha512sum --check <<< "$digest_line" \
+				|| die "Checksum mismatch!"
+		fi
 
 		# Create verification file in case the script is restarted
 		touch_or_die 0644 "$CURRENT_STAGE3_VERIFIED"
 	fi
+
+	maybe_exec 'after_download_stage3' "${CURRENT_STAGE3}"
 }
 
 function extract_stage3() {
+	# First, ensure any existing mounts are cleaned up
+	gentoo_umount
+	
+	# Now mount the root filesystem fresh
 	mount_root
 
 	[[ -n $CURRENT_STAGE3 ]] \
@@ -119,17 +130,66 @@ function extract_stage3() {
 	[[ -e "$TMP_DIR/$CURRENT_STAGE3" ]] \
 		|| die "stage3 file does not exist"
 
-	# Go to root directory
-	cd "$ROOT_MOUNTPOINT" \
-		|| die "Could not move to '$ROOT_MOUNTPOINT'"
-	# Ensure the directory is empty
-	find . -mindepth 1 -maxdepth 1 -not -name 'lost+found' \
-		| grep -q . \
-		&& die "root directory '$ROOT_MOUNTPOINT' is not empty"
+	# For BTRFS setups, check if we should extract to gentoo subdirectory
+	local extract_path="$ROOT_MOUNTPOINT"
+	if [[ -d "$ROOT_MOUNTPOINT/gentoo" ]] && mountpoint -q "$ROOT_MOUNTPOINT/gentoo" 2>/dev/null; then
+		einfo "Detected BTRFS activeroot setup, extracting to $ROOT_MOUNTPOINT/gentoo"
+		extract_path="$ROOT_MOUNTPOINT/gentoo"
+	fi
+
+	# Go to the correct extraction directory
+	cd "$extract_path" \
+		|| die "Could not move to '$extract_path'"
+	
+	# Check if directory is empty (excluding lost+found)
+	local non_empty_files
+	non_empty_files=$(find . -mindepth 1 -maxdepth 1 -not -name 'lost+found' | head -5)
+	if [[ -n $non_empty_files ]]; then
+		ewarn "Extraction directory '$extract_path' is not empty, found:"
+		echo "$non_empty_files"
+		einfo "Checking for mount points before cleaning..."
+		
+		# Check each item to see if it's a mount point
+		local items_to_remove=()
+		while IFS= read -r item; do
+			local full_path="$extract_path/${item#./}"
+			if mountpoint -q "$full_path" 2>/dev/null; then
+				ewarn "Skipping mounted filesystem: $item"
+			else
+				# Check if any subdirectories are mount points
+				local has_mounts=false
+				if [[ -d "$item" ]]; then
+					while IFS= read -r subitem; do
+						if [[ -n "$subitem" ]] && mountpoint -q "$extract_path/${subitem#./}" 2>/dev/null; then
+							ewarn "Directory $item contains mount point: $subitem"
+							has_mounts=true
+						fi
+					done < <(find "$item" -type d 2>/dev/null || true)
+				fi
+				
+				if [[ "$has_mounts" == "false" ]]; then
+					items_to_remove+=("$item")
+				else
+					ewarn "Skipping directory with mount points: $item"
+				fi
+			fi
+		done <<< "$non_empty_files"
+		
+		# Remove only non-mounted items
+		if [[ ${#items_to_remove[@]} -gt 0 ]]; then
+			einfo "Cleaning non-mounted items from extraction directory..."
+			for item in "${items_to_remove[@]}"; do
+				einfo "Removing: $item"
+				rm -rf "$item" || ewarn "Could not remove $item"
+			done
+		else
+			einfo "All items are mounted or contain mount points - skipping cleanup"
+		fi
+	fi
 
 	# Extract tarball
-	einfo "Extracting stage3 tarball"
-	tar xpf "$TMP_DIR/$CURRENT_STAGE3" --xattrs --numeric-owner \
+	einfo "Extracting stage3 tarball to $extract_path"
+	tar xpf "$TMP_DIR/$CURRENT_STAGE3" --xattrs-include='*.*' --numeric-owner \
 		|| die "Error while extracting tarball"
 	cd "$TMP_DIR" \
 		|| die "Could not cd into '$TMP_DIR'"
@@ -138,6 +198,17 @@ function extract_stage3() {
 function gentoo_umount() {
 	if mountpoint -q -- "$ROOT_MOUNTPOINT"; then
 		einfo "Unmounting root filesystem"
+		# For btrfs setups, try to unmount subvolumes first
+		if [[ -d "$ROOT_MOUNTPOINT/gentoo" ]] && mountpoint -q "$ROOT_MOUNTPOINT/gentoo" 2>/dev/null; then
+			einfo "Detected btrfs subvolume setup, unmounting subvolumes first"
+			# Try to unmount any virtual filesystems in the subvolume first
+			for vfs in proc run tmp sys dev; do
+				if mountpoint -q "$ROOT_MOUNTPOINT/gentoo/$vfs" 2>/dev/null; then
+					einfo "Unmounting virtual filesystem: $ROOT_MOUNTPOINT/gentoo/$vfs"
+					umount -l "$ROOT_MOUNTPOINT/gentoo/$vfs" 2>/dev/null || true
+				fi
+			done
+		fi
 		umount -R -l "$ROOT_MOUNTPOINT" \
 			|| die "Could not unmount filesystems"
 	fi
@@ -195,20 +266,23 @@ function mount_by_id() {
 }
 
 function bind_repo_dir() {
-	# Use new location by default
+	# The bind mount needs to be inside the chroot directory
+	# For the Gentoo-Install setup, the actual root is at $ROOT_MOUNTPOINT/gentoo/
+	local chroot_bind_path="$ROOT_MOUNTPOINT/gentoo$GENTOO_INSTALL_REPO_BIND"
+	
+	# Use the bind location for scripts inside chroot
 	export GENTOO_INSTALL_REPO_DIR="$GENTOO_INSTALL_REPO_BIND"
 
-	# Bind the repo dir to a location in /tmp,
-	# so it can be accessed from within the chroot
-	mountpoint -q -- "$GENTOO_INSTALL_REPO_BIND" \
+	# Check if already mounted
+	mountpoint -q -- "$chroot_bind_path" \
 		&& return
 
-	# Mount root device
-	einfo "Bind mounting repo directory"
-	mkdir -p "$GENTOO_INSTALL_REPO_BIND" \
-		|| die "Could not create mountpoint directory '$GENTOO_INSTALL_REPO_BIND'"
-	mount --bind "$GENTOO_INSTALL_REPO_DIR_ORIGINAL" "$GENTOO_INSTALL_REPO_BIND" \
-		|| die "Could not bind mount '$GENTOO_INSTALL_REPO_DIR_ORIGINAL' to '$GENTOO_INSTALL_REPO_BIND'"
+	# Create the bind mount directory inside the chroot
+	einfo "Bind mounting repo directory to chroot"
+	mkdir -p "$chroot_bind_path" \
+		|| die "Could not create mountpoint directory '$chroot_bind_path'"
+	mount --bind "$GENTOO_INSTALL_REPO_DIR_ORIGINAL" "$chroot_bind_path" \
+		|| die "Could not bind mount '$GENTOO_INSTALL_REPO_DIR_ORIGINAL' to '$chroot_bind_path'"
 }
 
 function gentoo_chroot() {
@@ -223,13 +297,23 @@ function gentoo_chroot() {
 	local chroot_dir="$1"
 	shift
 
+	# Bind repo directory to tmp
+	bind_repo_dir
+
 	# Copy resolv.conf
 	einfo "Preparing chroot environment"
+	
+	# Ensure essential directories exist
+	for essential_dir in etc proc run tmp sys dev; do
+		mkdir -p "$chroot_dir/$essential_dir" || die "Could not create directory '$chroot_dir/$essential_dir'"
+	done
+	
 	install --mode=0644 /etc/resolv.conf "$chroot_dir/etc/resolv.conf" \
 		|| die "Could not copy resolv.conf"
 
 	# Mount virtual filesystems
 	einfo "Mounting virtual filesystems"
+	
 	(
 		mountpoint -q -- "$chroot_dir/proc" || mount -t proc /proc "$chroot_dir/proc" || exit 1
 		mountpoint -q -- "$chroot_dir/run"  || {

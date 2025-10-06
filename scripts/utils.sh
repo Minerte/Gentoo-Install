@@ -26,6 +26,13 @@ function die() {
 	exit 1
 }
 
+function touch_or_die() {
+	local mode="$1"
+	local file="$2"
+	touch "$file" || die "Could not create file '$file'"
+	chmod "$mode" "$file" || die "Could not set permissions on '$file'"
+}
+
 # Prints an error with file:line info of the nth "stack frame".
 # 0 is this function, 1 the calling function, 2 its parent, and so on.
 function die_trace() {

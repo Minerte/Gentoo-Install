@@ -58,6 +58,7 @@ while [[ $# -gt 0 ]]; do
 		"-R"|"--chroot")
 			[[ -z $ACTION ]] || die "Multiple actions given"
 			ACTION="chroot"
+			[[ $# -gt 1 ]] || die "Missing directory argument for --chroot"
 			CHROOT_DIR="$2"
 			[[ -e "$CHROOT_DIR" ]] || die "Chroot directory not found: '$CHROOT_DIR'"
 			shift

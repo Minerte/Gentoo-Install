@@ -1,7 +1,8 @@
-# This is for logs and debugging
-# It is also a Utils to determine UUID/PARTUUID of the disk 
-
+# shellcheck source=./scripts/protection.sh
 source "$GENTOO_INSTALL_REPO_DIR/scripts/protection.sh" || exit 1
+
+# Declare associative array for device ID resolution
+declare -A DISK_ID_TO_RESOLVABLE
 
 function elog() {
 	echo "[[1m+[m] $*"
@@ -24,13 +25,6 @@ function die() {
 	[[ -v GENTOO_INSTALL_REPO_SCRIPT_PID && $$ -ne $GENTOO_INSTALL_REPO_SCRIPT_PID ]] \
 		&& kill "$GENTOO_INSTALL_REPO_SCRIPT_PID"
 	exit 1
-}
-
-function touch_or_die() {
-	local mode="$1"
-	local file="$2"
-	touch "$file" || die "Could not create file '$file'"
-	chmod "$mode" "$file" || die "Could not set permissions on '$file'"
 }
 
 # Prints an error with file:line info of the nth "stack frame".
@@ -243,9 +237,9 @@ function create_resolve_entry() {
 
 function create_resolve_entry_device() {
 	local id="$1"
-	local dev="$2"
-
-	DISK_ID_TO_RESOLVABLE[$id]="device:$dev"
+	local device_path="$2"
+	
+	create_resolve_entry "$id" "device" "$device_path"
 }
 
 # Returns the basename of the device, if its path starts with /dev/disk/by-id/

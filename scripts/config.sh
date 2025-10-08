@@ -7,16 +7,12 @@ TMP_DIR="/tmp/gentoo-install"
 # Mountpoint for the new system
 ROOT_MOUNTPOINT="$TMP_DIR/root"
 # Mountpoint for the script files for access from chroot
-GENTOO_INSTALL_REPO_BIND="$TMP_DIR/bind"
+GENTOO_INSTALL_REPO_BIND="/tmp/gentoo-install/bind"
 # Mountpoint for the script files for access from chroot
 UUID_STORAGE_DIR="$TMP_DIR/uuids"
-
-# Since we're requiring EFI
-declare IS_EFI=true        
+       
 # An associative array to check for existing ids (maps to uuids)
 declare -gA DISK_ID_TO_UUID
-# An associative array to resolve device IDs to actual devices
-declare -gA DISK_ID_TO_RESOLVABLE
 
 function disk_creation() {
     # Check if BOOT_DRIVE and ROOT_DRIVE are set
@@ -108,16 +104,6 @@ function verify_partitions() {
     # Additional wait and probing for stubborn systems
     partprobe "$BOOT_DRIVE" "$ROOT_DRIVE" 2>/dev/null
     sleep 3
-
-    # Debug: List current partitions
-    echo "Debug: Current partitions on $BOOT_DRIVE:"
-    lsblk "$BOOT_DRIVE" 2>/dev/null || echo "Could not list $BOOT_DRIVE"
-    echo "Debug: Current partitions on $ROOT_DRIVE:"
-    lsblk "$ROOT_DRIVE" 2>/dev/null || echo "Could not list $ROOT_DRIVE"
-    
-    # Additional debugging: Show /proc/partitions
-    echo "Debug: Kernel partition table:"
-    grep -E "(${BOOT_DRIVE##*/}|${ROOT_DRIVE##*/})" /proc/partitions 2>/dev/null || echo "No partitions found in /proc/partitions"
 
     # Verify and store UUIDs for all partitions
     local partitions=(
@@ -227,6 +213,10 @@ function create_gpg_disk_layout() {
     
     # Create resolve entries for the encrypted devices
     create_resolve_entry_device "ROOT" "/dev/mapper/cryptroot"
+    create_resolve_entry_device "SWAP" "/dev/mapper/cryptswap"
+    # Create resolve entries for boot partitions
+    create_resolve_entry_device "EFI" "${BOOT}1"
+    create_resolve_entry_device "BOOT" "/dev/mapper/luks-keys"
 }
 
 function apply_disk_conf() {
@@ -235,33 +225,27 @@ function apply_disk_conf() {
     mkswap /dev/mapper/cryptswap
     swapon /dev/mapper/cryptswap
 
+    # Create necessary directory structure
+    mkdir -p "/mnt/root"
+
     mkfs.btrfs -L "$LABEL" /dev/mapper/cryptroot
     
-    # Create necessary directory structure
-    mkdir -p "$ROOT_MOUNTPOINT/activeroot"
-    
     # Mount the root filesystem to create subvolumes
-    mount -t btrfs -o defaults,noatime,compress=zstd /dev/mapper/cryptroot "$ROOT_MOUNTPOINT/activeroot"
+    mount -t btrfs -o defaults,noatime,compress=zstd /dev/mapper/cryptroot "/mnt/root"
 
     # Create btrfs subvolumes (note: activeroot subvolume shouldn't be created inside itself)
-    for sub in home etc var log tmp; do 
-        btrfs subvolume create "$ROOT_MOUNTPOINT/activeroot/$sub" || { echo "Failed to create subvolume $sub"; exit 1; }
+    for sub in activeroot home etc var log tmp; do 
+        btrfs subvolume create "/mnt/root/$sub" || { echo "Failed to create subvolume $sub"; exit 1; }
     done
     
-    # Create activeroot subvolume at the root level
-    btrfs subvolume create "$ROOT_MOUNTPOINT/activeroot/activeroot" || { echo "Failed to create subvolume activeroot"; exit 1; }
-
-    # Remount with activeroot subvolume
-    umount "$ROOT_MOUNTPOINT/activeroot"
-    mkdir -p "$ROOT_MOUNTPOINT/gentoo"
-    mount -t btrfs -o defaults,noatime,compress=lzo,subvol=activeroot /dev/mapper/cryptroot "$ROOT_MOUNTPOINT/gentoo/"
-    
+    mount -t btrfs -o defaults,noatime,compress=zstd,subvol=activeroot /dev/mapper/cryptroot "$ROOT_MOUNTPOINT/gentoo"
     # Create mount points for the final system AFTER mounting activeroot
-    mkdir -p "$ROOT_MOUNTPOINT/gentoo"/{home,etc,var,log,tmp,efi,boot}
-    
+    mkdir -p "$ROOT_MOUNTPOINT/gentoo"
+    mkdir -p "$ROOT_MOUNTPOINT/gentoo/"{home,etc,var,log,tmp,efi,boot}
     # Mount other subvolumes
     for sub in home etc var log; do
         mount -t btrfs -o defaults,noatime,compress=zstd,subvol=$sub /dev/mapper/cryptroot "$ROOT_MOUNTPOINT/gentoo/$sub" || { echo "Failed to mount subvolume $sub"; exit 1; }
     done
-    mount -t btrfs -o defaults,noatime,nosuid,noexec,nodev,compress=lzo,subvol=tmp /dev/mapper/cryptroot "$ROOT_MOUNTPOINT/gentoo/tmp"
+    # Different rule for TMP
+    mount -t btrfs -o defaults,noatime,compress=lzo,subvol=tmp /dev/mapper/cryptroot "$ROOT_MOUNTPOINT/gentoo/tmp"
 }

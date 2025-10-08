@@ -15,7 +15,6 @@ function prep_installation_environment() {
 		python3
 		"?rhash"
 		sha512sum
-		sgdisk
 		uuidgen
 		wget
 	)
@@ -123,7 +122,7 @@ function extract_stage3() {
 	gentoo_umount
 	
 	# Now mount the root filesystem fresh
-	mount_root
+	gentoo_mount
 
 	[[ -n $CURRENT_STAGE3 ]] \
 		|| die "CURRENT_STAGE3 is not set"
@@ -195,23 +194,22 @@ function extract_stage3() {
 		|| die "Could not cd into '$TMP_DIR'"
 }
 
+function gentoo_mount() {
+	# Mount filesystems in dependency order
+	mount_by_id "$DISK_ID_ROOT" "$ROOT_MOUNTPOINT"
+	# Note: The btrfs subvolumes (gentoo, home, etc, var, log) are already 
+	# mounted by apply_disk_conf() function, so we don't need to mount them here
+}
+
 function gentoo_umount() {
-	if mountpoint -q -- "$ROOT_MOUNTPOINT"; then
-		einfo "Unmounting root filesystem"
-		# For btrfs setups, try to unmount subvolumes first
-		if [[ -d "$ROOT_MOUNTPOINT/gentoo" ]] && mountpoint -q "$ROOT_MOUNTPOINT/gentoo" 2>/dev/null; then
-			einfo "Detected btrfs subvolume setup, unmounting subvolumes first"
-			# Try to unmount any virtual filesystems in the subvolume first
-			for vfs in proc run tmp sys dev; do
-				if mountpoint -q "$ROOT_MOUNTPOINT/gentoo/$vfs" 2>/dev/null; then
-					einfo "Unmounting virtual filesystem: $ROOT_MOUNTPOINT/gentoo/$vfs"
-					umount -l "$ROOT_MOUNTPOINT/gentoo/$vfs" 2>/dev/null || true
-				fi
-			done
-		fi
-		umount -R -l "$ROOT_MOUNTPOINT" \
-			|| die "Could not unmount filesystems"
-	fi
+	# Unmount in reverse dependency order
+	umount -l /tmp/gentoo-install/root/gentoo/tmp 2>/dev/null || true
+	umount -l /tmp/gentoo-install/root/gentoo/log 2>/dev/null || true
+	umount -l /tmp/gentoo-install/root/gentoo/var 2>/dev/null || true
+	umount -l /tmp/gentoo-install/root/gentoo/etc 2>/dev/null || true
+	umount -l /tmp/gentoo-install/root/gentoo/home 2>/dev/null || true
+	umount -l /tmp/gentoo-install/root/gentoo 2>/dev/null || true
+	umount -l /tmp/gentoo-install/root 2>/dev/null || true
 }
 
 function check_config() {
@@ -242,12 +240,12 @@ function mount_efivars() {
 }
 
 # shellcheck disable=SC2120
-function  mount_root() {
-	mount_by_id "$DISK_ID_ROOT" "$ROOT_MOUNTPOINT"
-}
+#function  mount_root() {
+#	mount_by_id "$DISK_ID_ROOT" "$ROOT_MOUNTPOINT"
+#}
 
 function mount_by_id() {
-		local dev
+	local dev
 	local id="$1"
 	local mountpoint="$2"
 
@@ -266,9 +264,9 @@ function mount_by_id() {
 }
 
 function bind_repo_dir() {
+	local chroot_dir="${1:-$ROOT_MOUNTPOINT/gentoo}"
 	# The bind mount needs to be inside the chroot directory
-	# For the Gentoo-Install setup, the actual root is at $ROOT_MOUNTPOINT/gentoo/
-	local chroot_bind_path="$ROOT_MOUNTPOINT/gentoo$GENTOO_INSTALL_REPO_BIND"
+	local chroot_bind_path="$chroot_dir$GENTOO_INSTALL_REPO_BIND"
 	
 	# Use the bind location for scripts inside chroot
 	export GENTOO_INSTALL_REPO_DIR="$GENTOO_INSTALL_REPO_BIND"
@@ -297,9 +295,6 @@ function gentoo_chroot() {
 	local chroot_dir="$1"
 	shift
 
-	# Bind repo directory to tmp
-	bind_repo_dir
-
 	# Copy resolv.conf
 	einfo "Preparing chroot environment"
 	
@@ -319,9 +314,7 @@ function gentoo_chroot() {
 		mountpoint -q -- "$chroot_dir/run"  || {
 			mount --rbind /run  "$chroot_dir/run" &&
 			mount --make-rslave "$chroot_dir/run"; } || exit 1
-		mountpoint -q -- "$chroot_dir/tmp"  || {
-			mount --rbind /tmp  "$chroot_dir/tmp" &&
-			mount --make-rslave "$chroot_dir/tmp"; } || exit 1
+		mountpoint -q -- "$chroot_dir/tmp"  || mount -t tmpfs tmpfs "$chroot_dir/tmp" || exit 1
 		mountpoint -q -- "$chroot_dir/sys"  || {
 			mount --rbind /sys  "$chroot_dir/sys" &&
 			mount --make-rslave "$chroot_dir/sys"; } || exit 1
@@ -329,6 +322,9 @@ function gentoo_chroot() {
 			mount --rbind /dev  "$chroot_dir/dev" &&
 			mount --make-rslave "$chroot_dir/dev"; } || exit 1
 	) || die "Could not mount virtual filesystems"
+
+	# Bind repo directory to tmp (after tmpfs mount)
+	bind_repo_dir "$chroot_dir"
 
 	# Cache lsblk output, because it doesn't work correctly in chroot (returns almost no info for devices, e.g. empty uuids)
 	cache_lsblk_output
@@ -340,4 +336,10 @@ function gentoo_chroot() {
 		CACHED_LSBLK_OUTPUT="$CACHED_LSBLK_OUTPUT" \
 		exec chroot -- "$chroot_dir" "$GENTOO_INSTALL_REPO_DIR/scripts/dispatch_chroot.sh" "$@" \
 			|| die "Failed to chroot into '$chroot_dir'."
+}
+
+function touch_or_die() {
+	touch "$2" \
+		|| die "Could not touch '$2'"
+	chmod "$1" "$2"
 }
